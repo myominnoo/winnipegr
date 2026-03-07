@@ -78,3 +78,27 @@ glimpse_all <- function(data_list) {
 
 
 
+
+# DT helpers ------------------------------------------------------------
+
+# Render a searchable, filterable DT table ----
+make_dt <- function(df,
+                    page_length = 15,
+                    filter      = "top",
+                    rownames    = FALSE,
+                    ...) {
+  DT::datatable(
+    df,
+    filter   = filter,
+    rownames = rownames,
+    options  = list(
+      pageLength = page_length,
+      autoWidth  = TRUE,
+      scrollX    = TRUE        # handles wide tables like diagnostics
+    ),
+    ...                        # pass any extra DT::datatable() args
+  )
+}
+
+
+

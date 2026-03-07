@@ -1,0 +1,286 @@
+---
+title: "Winnipeg Open Datathon — Import & Diagnostics"
+author: "Myo Minn Oo & Yong Jin"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    df_print: default
+    code_folding: hide
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+---
+
+# Overview
+
+This document covers the full pipeline for importing, caching, and diagnosing
+11 datasets from the [Winnipeg Open Data Portal](https://data.winnipeg.ca).
+The datasets span property assessment, public health, transit, land use, and
+census data. The ultimate goal is to merge them into a parcel-level master
+dataset anchored on **Assessment Parcels**.
+
+---
+
+# 1. API Configuration
+
+Each dataset is referenced by its Socrata resource ID. Per-dataset row limits
+are defined separately so they can be adjusted without touching the fetch logic.
+`NULL` means no limit — `RSocrata::read.socrata()` will auto-paginate and
+return all rows.
+
+Note: Two datasets — **Transit Pass-ups** and **Short Term Rentals** — have no
+neighbourhood identifier and will require a manual spatial join later.
+
+```{r api-config}
+api_list <- list(
+  assessment_parcels        = "https://data.winnipeg.ca/resource/d4mq-wa44.json",
+  parks_open_space          = "https://data.winnipeg.ca/resource/tx3d-pfxq.json",
+  substance_use             = "https://data.winnipeg.ca/resource/6x82-bz5y.json",
+  naloxone_administrations  = "https://data.winnipeg.ca/resource/qd6b-q49i.json",
+  transit_passups           = "https://data.winnipeg.ca/resource/mer2-irmb.json",  # no neighbourhood
+  census_households         = "https://data.winnipeg.ca/resource/nmk5-uwfw.json",
+  requests_311              = "https://data.winnipeg.ca/resource/u7f6-5326.json",
+  higher_poverty_areas      = "https://data.winnipeg.ca/resource/gg4w-peq6.json",
+  trade_permits             = "https://data.winnipeg.ca/resource/urbd-qygv.json",
+  rooming_house_enforcement = "https://data.winnipeg.ca/resource/vk2f-xwp7.json",
+  short_term_rentals        = "https://data.winnipeg.ca/resource/74hr-f8ai.json"   # no neighbourhood
+)
+
+api_limits <- list(
+  assessment_parcels        = 50000,
+  parks_open_space          = NULL,
+  substance_use             = NULL,
+  naloxone_administrations  = NULL,
+  transit_passups           = 50000,
+  census_households         = NULL,
+  requests_311              = 50000,
+  higher_poverty_areas      = NULL,
+  trade_permits             = 50000,
+  rooming_house_enforcement = NULL,
+  short_term_rentals        = 5000
+)
+```
+
+---
+
+# 2. Fetch Functions
+
+With Claude's help, we have created three modular functions handle the import pipeline:
+
+- `build_url()` — appends `?$limit=N` to a URL when a limit is specified
+- `fetch_socrata()` — fetches a single dataset with `tryCatch` error handling;
+  returns `NULL` on failure so the rest of the pipeline continues uninterrupted
+- `fetch_all_socrata()` — orchestrates the full fetch using `purrr::map2()` to
+  pair each URL with its limit, then reports any failures
+  
+  
+```{r fetch-functions}
+# Module 1: Build URL with optional row limit ----
+build_url <- function(url, limit = NULL) {
+  if (!base::is.null(limit)) {
+    base::paste0(url, "?$limit=", limit)
+  } else {
+    url
+  }
+}
+
+# Module 2: Fetch a single dataset with error handling ----
+fetch_socrata <- function(url, limit = NULL) {
+  final_url <- build_url(url, limit)
+  base::message("Fetching: ", final_url)
+  tryCatch(
+    expr    = RSocrata::read.socrata(final_url),
+    error   = \(e) {
+      base::message("ERROR fetching ", final_url, "\n  → ", base::conditionMessage(e))
+      NULL
+    },
+    warning = \(w) {
+      base::message("WARNING fetching ", final_url, "\n  → ", base::conditionMessage(w))
+      RSocrata::read.socrata(final_url)
+    }
+  )
+}
+
+# Module 3: Report failed datasets ----
+report_failures <- function(data_list) {
+  failed <- base::names(purrr::keep(data_list, base::is.null))
+  if (base::length(failed) > 0) {
+    base::message("\nFailed to load: ", base::paste(failed, collapse = ", "))
+  } else {
+    base::message("\nAll datasets loaded successfully.")
+  }
+  base::invisible(failed)
+}
+
+# Module 4: Fetch all datasets with per-dataset limits ----
+fetch_all_socrata <- function(api_list, api_limits = NULL) {
+  if (base::is.null(api_limits)) {
+    data_list <- purrr::map(api_list, fetch_socrata)
+  } else {
+    data_list <- purrr::map2(
+      api_list,
+      api_limits,
+      \(url, lim) fetch_socrata(url, limit = lim)
+    )
+  }
+  report_failures(data_list)
+  data_list
+}
+```
+
+---
+
+# 3. Import Data
+
+Data is loaded from a local cache (`data/data_raw_list.RData`) if it exists,
+avoiding unnecessary repeat API calls. If no cache is found, data is fetched
+fresh from the API and saved for future sessions.
+```{r import-data}
+cache_path <- "data/data_raw_list.RData"
+
+if (base::file.exists(cache_path)) {
+  base::message("Loading from cache: ", cache_path)
+  base::load(cache_path)
+} else {
+  base::message("Cache not found — fetching from API...")
+  data_raw_list <- fetch_all_socrata(api_list, api_limits)
+  base::save(data_raw_list, file = cache_path)
+}
+```
+
+---
+
+# 4. Structure Overview
+
+Quick check of rows and columns per dataset to verify the pull was complete.
+```{r structure-overview}
+dim_summary <- purrr::imap_dfr(data_raw_list, \(df, name) {
+  tibble::tibble(
+    dataset = name,
+    rows    = base::nrow(df),
+    cols    = base::ncol(df),
+    loaded  = !base::is.null(df)
+  )
+})
+
+dim_summary |> 
+  make_dt()
+```
+
+---
+
+# 5. Join Key Scan
+
+Scan all datasets for columns likely to serve as merge keys — neighbourhood,
+ward, and ID fields.
+```{r join-key-scan}
+join_keys <- purrr::imap_dfr(data_raw_list, \(df, name) {
+  if (base::is.null(df)) return(NULL)
+  matched <- base::grep(
+    pattern     = "neighbourhood|neigh|_id|ward",
+    x           = base::names(df),
+    value       = TRUE,
+    ignore.case = TRUE
+  )
+  if (base::length(matched) == 0) return(NULL)
+  tibble::tibble(
+    dataset   = name,
+    join_keys = base::paste(matched, collapse = ", ")
+  )
+})
+
+join_keys |> 
+  make_dt()
+```
+
+---
+
+# 6. Column Diagnostics
+
+The `check_all()` function runs a comprehensive column-level audit across every
+dataset. For each column it reports:
+
+- **n_total / n_valid / n_missing** — observation counts
+- **pct_missing** — percentage of missing or blank values
+- **min / max / mean / median / sd** — for numeric columns
+- **min / max** (date range) — for date columns
+- **n_unique / categories** — top categories with counts for character columns
+
+---
+
+## 6.1 Missing Values Summary
+
+Columns with any missing values, ranked by severity.
+```{r missing-values}
+missing_summary <- diagnostics |>
+  dplyr::filter(pct_missing > 0) |>
+  dplyr::select(dataset, column, type, n_total, n_missing, pct_missing) |>
+  dplyr::arrange(dplyr::desc(pct_missing)) 
+
+missing_summary |> 
+  make_dt()
+```
+```{r missing-flag}
+# Columns with > 50% missing — candidates for exclusion ----
+missing_summary |>
+  dplyr::filter(pct_missing > 50) |>
+  dplyr::select(dataset, column, pct_missing) |> 
+  make_dt()
+```
+
+---
+
+## 6.2 Numeric Column Statistics
+
+Summary statistics for all numeric and integer columns across every dataset.
+```{r numeric-stats}
+diagnostics |>
+  dplyr::filter(type %in% c("numeric", "integer")) |>
+  dplyr::select(dataset, column, min, max, mean, median, sd, n_missing, pct_missing) |> 
+  make_dt()
+```
+
+---
+
+## 6.3 Categorical Column Valid Values
+
+Valid categories and their frequencies for all character columns. Columns with
+more than 10 unique values show the top 10 plus a count of remaining categories.
+```{r categorical-values}
+diagnostics |>
+  dplyr::filter(type == "character", !base::is.na(categories)) |>
+  dplyr::select(dataset, column, n_unique, categories) |> 
+  make_dt()
+```
+
+---
+
+## 6.4 Date Column Ranges
+
+Date range (min → max) for all date and datetime columns — useful for
+understanding temporal coverage before merging.
+```{r date-ranges}
+diagnostics |>
+  dplyr::filter(type %in% c("POSIXct", "POSIXlt", "Date")) |>
+  dplyr::select(dataset, column, min, max, n_unique) |> 
+  make_dt()
+```
+
+
+---
+
+# 8. Session Info
+```{r session-info}
+utils::sessionInfo()
+```
