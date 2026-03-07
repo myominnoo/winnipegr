@@ -102,3 +102,12 @@ make_dt <- function(df,
 
 
 
+
+# 03-data-process helpers ---------------------------------------------------------
+
+clean_neighbourhood <- function(x) {
+  x |>
+    stringr::str_to_upper() |>
+    stringr::str_squish()
+}
+

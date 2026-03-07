@@ -22,7 +22,7 @@ knitr::opts_chunk$set(
 
 ---
 
-# Overview
+# Section 1: Data Import, Cleaning, And Processing
 
 This document covers the full pipeline for importing, caching, and diagnosing
 11 datasets from the [Winnipeg Open Data Portal](https://data.winnipeg.ca).
@@ -284,3 +284,329 @@ diagnostics |>
 ```{r session-info}
 utils::sessionInfo()
 ```
+
+
+
+md---
+title: "Winnipeg Neighbourhood Liveability Index — Methodology"
+author: ""
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    df_print: default
+---
+
+---
+
+# Section 2: Factor Analysis
+
+The Winnipeg Neighbourhood Liveability Index (WNLI) is a composite score that
+summarises the overall quality of life across Winnipeg neighbourhoods using
+publicly available open data from the
+[Winnipeg Open Data Portal](https://data.winnipeg.ca). The index aggregates
+11 datasets spanning property assessment, public health, green space, municipal
+services, housing vulnerability, and short-term rentals into a single 0–100
+score per neighbourhood.
+
+The index is designed to be **transparent**, **reproducible**, and
+**comparable across neighbourhoods** — three properties that guided every
+methodological decision documented here.
+
+---
+
+# 1. Common Approaches to Liveability Indices
+
+There are three established methods for constructing composite liveability
+indices. Each involves tradeoffs between simplicity, statistical rigour, and
+communicability.
+
+---
+
+## 1.1 Equal-Weight Composite Scoring
+
+The simplest approach. Each indicator is normalized to a common scale
+(typically 0–100 or a z-score), then all indicators are averaged with equal
+weight to produce a final score.
+
+**Used by:** The Economist Intelligence Unit Global Liveability Index,
+MERCER Quality of Living Survey.
+
+**Strengths:**
+
+- Fully transparent — every indicator contributes the same amount
+- Easy to explain to non-technical audiences
+- Simple to update as new data becomes available
+
+**Weaknesses:**
+
+- Implicitly assumes all dimensions of liveability are equally important
+- Sensitive to the number of indicators per domain — domains with more
+  indicators get more influence
+- Does not account for statistical redundancy between correlated indicators
+
+---
+
+## 1.2 Domain-Weighted Composite Scoring
+
+Indicators are grouped into thematic **domains** (e.g. safety, housing, green
+space). Scores are computed within each domain, then domains are combined with
+explicit weights — either equal across domains, or set by expert judgment or
+community consultation.
+
+**Used by:** The Canadian Index of Wellbeing, the UN Human Development Index,
+most municipal and regional liveability indices.
+
+**Strengths:**
+
+- Balances domains regardless of how many indicators each contains
+- Weights can be adjusted to reflect local priorities
+- Results are interpretable at the domain level, not just the composite
+
+**Weaknesses:**
+
+- Domain weights are subjective unless derived from community input or research
+- Requires clear theoretical justification for what belongs in each domain
+
+> **This is the approach adopted for the WNLI.** Equal weights are applied
+> across six domains in the first iteration. Sensitivity analysis will test
+> alternative weighting schemes.
+
+---
+
+## 1.3 Principal Component Analysis / Factor Analysis
+
+A data-driven approach where the statistical structure of the indicators
+determines how they are grouped and weighted. PCA identifies linear combinations
+of indicators that explain the most variance, while factor analysis uncovers
+latent constructs underlying the observed variables.
+
+**Used by:** Academic liveability research, neighbourhood deprivation indices,
+Statistics Canada's Material and Social Deprivation Index.
+
+**Strengths:**
+
+- Weights are derived from the data, not subjective judgment
+- Automatically handles correlated indicators by consolidating them
+- Defensible in peer-reviewed or technical contexts
+
+**Weaknesses:**
+
+- Results are difficult to communicate to general audiences
+- Component loadings can be unstable with small samples or high missingness
+- Less practical for iterative updates as new data arrives
+
+---
+
+# 2. Normalization Methods
+
+Before indicators can be combined into a composite score, they must be placed
+on a common scale. The three most common normalization methods are:
+
+| Method | Formula | Range | Best for |
+|---|---|---|---|
+| **Min-max** | (x − min) / (max − min) | 0 to 1 | Interpretable scores bounded between 0 and 100 |
+| **Z-score** | (x − mean) / sd | Unbounded | Comparing deviations from the city average |
+| **Rank percentile** | rank(x) / n | 0 to 1 | Robust to outliers; less sensitive to extreme values |
+
+The WNLI uses **min-max normalization** scaled to 0–100. This produces scores
+that are immediately interpretable — a neighbourhood scoring 75 performs better
+than 75% of the possible range on that indicator. Z-scores will be computed
+as a robustness check.
+
+---
+
+# 3. Domain Structure
+
+The WNLI organises its indicators into **six domains**, each reflecting a
+distinct dimension of neighbourhood liveability. The domain structure is
+informed by the Canadian Index of Wellbeing framework and adapted to the
+variables available in Winnipeg's open data.
+
+---
+
+## Domain 1 — Housing & Property
+
+Reflects the quality, size, age, and value of the residential housing stock
+in each neighbourhood.
+
+| Indicator | Source | Direction |
+|---|---|---|
+| Median assessed property value | Assessment Parcels | ↑ Higher = better |
+| Median living area (sq ft) | Assessment Parcels | ↑ Higher = better |
+| Median housing age | Assessment Parcels | ↓ Older = worse |
+| Total dwelling units | Assessment Parcels | ↑ Higher = better |
+| Assessment value growth rate | Assessment Parcels | ↑ Higher = better |
+| % residential land use | Assessment Parcels | ↑ Higher = better |
+
+---
+
+## Domain 2 — Green Space & Environment
+
+Reflects access to parks and outdoor amenity within each neighbourhood.
+
+| Indicator | Source | Direction |
+|---|---|---|
+| Parks per 1,000 residents | Parks & Open Space | ↑ Higher = better |
+| Park area (ha) per 1,000 residents | Parks & Open Space | ↑ Higher = better |
+| Active park & open space area (ha) | Parks & Open Space | ↑ Higher = better |
+| Water feature area (ha) | Parks & Open Space | ↑ Higher = better |
+
+---
+
+## Domain 3 — Public Safety & Health
+
+Reflects the burden of substance use-related incidents and opioid overdoses
+within each neighbourhood during the 2021–2023 index window.
+
+| Indicator | Source | Direction |
+|---|---|---|
+| Substance use incidents per 1,000 residents | Substance Use | ↓ Higher = worse |
+| Opioid incidents per 1,000 residents | Substance Use | ↓ Higher = worse |
+| Crystal meth incidents per 1,000 residents | Substance Use | ↓ Higher = worse |
+| Naloxone administrations per 1,000 residents | Naloxone Administrations | ↓ Higher = worse |
+| Average naloxone doses per incident | Naloxone Administrations | ↓ Higher = worse |
+
+---
+
+## Domain 4 — Municipal Services & Activity
+
+Reflects both the demand for municipal services and the level of economic
+activity and investment in each neighbourhood.
+
+| Indicator | Source | Direction |
+|---|---|---|
+| 311 requests per 1,000 residents | 311 Requests | Ambiguous — see note |
+| 311 request resolution rate (closed/total) | 311 Requests | ↑ Higher = better |
+| Trade permits per 1,000 residents | Trade Permits | ↑ Higher = better |
+| Trade permit issuance rate (issued/total) | Trade Permits | ↑ Higher = better |
+
+> **Note on 311 requests:** A high volume of 311 requests can indicate either
+> an engaged, civically active neighbourhood or a distressed neighbourhood with
+> high service needs. The raw count is therefore treated as **ambiguous** and
+> excluded from scoring. Only the **resolution rate** is included as a positive
+> indicator of service delivery quality.
+
+---
+
+## Domain 5 — Housing Vulnerability
+
+Reflects the concentration of poverty and housing precarity within each
+neighbourhood, using both the Market Basket Measure and rooming house
+enforcement data.
+
+| Indicator | Source | Direction |
+|---|---|---|
+| Poverty rate (population in MBM / total) | Higher Poverty Areas | ↓ Higher = worse |
+| High poverty area designation | Higher Poverty Areas | ↓ Present = worse |
+| Rooming house complaints per neighbourhood | Rooming House Enforcement | ↓ Higher = worse |
+| Rooming house enforcement completion rate | Rooming House Enforcement | ↑ Higher = better |
+
+---
+
+## Domain 6 — Housing Market Pressure
+
+Reflects the presence of short-term rental activity, particularly
+investor-owned non-primary rentals which are associated with reduced housing
+affordability.
+
+| Indicator | Source | Direction |
+|---|---|---|
+| Short-term rentals per ward | Short-Term Rentals | Ambiguous — see note |
+| % non-primary (investor-owned) STRs | Short-Term Rentals | ↓ Higher = worse |
+
+> **Note:** Short-term rental data joins at the **electoral ward level** only,
+> as no neighbourhood identifier is available in this dataset. Ward-level values
+> are applied uniformly to all parcels within a ward, which introduces
+> measurement imprecision at the neighbourhood level.
+
+---
+
+# 4. Composite Score Construction
+
+The final WNLI score is computed in three steps:
+
+**Step 1 — Normalize each indicator** to a 0–1 scale using min-max
+normalization. Negative indicators (where higher raw values indicate worse
+outcomes) are inverted so that **higher always means more liveable** across
+all indicators.
+
+**Step 2 — Average within domains.** Each domain score is the unweighted mean
+of its constituent normalized indicators. Missing values are excluded from the
+average rather than imputed, so neighbourhoods with fewer data sources still
+receive partial scores.
+
+**Step 3 — Average across domains.** The final composite score is the
+unweighted mean of all six domain scores, multiplied by 100 to produce a
+0–100 scale.
+
+$$
+\text{WNLI}_i = \frac{1}{6} \sum_{d=1}^{6} \text{Domain}_{d,i} \times 100
+$$
+
+Where $i$ indexes neighbourhoods and $d$ indexes the six domains.
+
+---
+
+# 5. Key Methodological Decisions
+
+| Decision | Choice made | Rationale |
+|---|---|---|
+| **Index level** | Neighbourhood | Parcel-level data aggregated to neighbourhood before scoring |
+| **Normalization** | Min-max (0–100) | Interpretable, bounded, easy to communicate |
+| **Domain weights** | Equal (1/6 each) | Transparent starting point; sensitivity analysis will test alternatives |
+| **Missing values** | Excluded from average | Avoids imputation bias; partial scores still produced |
+| **Negative indicators** | Inverted before scoring | Higher always = more liveable across all indicators |
+| **Time window** | 2021–2023 | Tightest common window across all event-level datasets |
+
+---
+
+# 6. Limitations
+
+**Data availability.** Not all neighbourhoods have records in every dataset.
+The Higher Poverty Areas dataset covers only ~60 designated high-poverty
+neighbourhoods; Domain 5 scores will be missing for all other neighbourhoods
+unless this is treated as "not high poverty" (a valid but explicit assumption).
+
+**Neighbourhood name standardisation.** Several datasets use different naming
+conventions for the same neighbourhood. Fuzzy matching and a manual remap table
+were used to standardise keys before joining, but residual mismatches may remain.
+
+**Ecological fallacy.** All scores are neighbourhood-level averages. They
+describe the neighbourhood as a whole and should not be used to make inferences
+about individual parcels or households.
+
+**311 requests join failure.** At the time of writing, the 311 Requests dataset
+has not successfully joined to the master due to neighbourhood key mismatches.
+Domain 4 scores currently rely on trade permits only until this is resolved.
+
+**Short-term rentals at ward level.** STR data is available at the electoral
+ward level only. All neighbourhoods within a ward receive the same STR score,
+which reduces sensitivity to within-ward variation.
+
+---
+
+# 7. Next Steps
+
+1. Resolve outstanding neighbourhood name mismatches (particularly 311 Requests)
+2. Validate domain scores against known neighbourhood characteristics
+3. Conduct sensitivity analysis on domain weights
+4. Map WNLI scores spatially using `centroid_lat` / `centroid_lon` from
+   Assessment Parcels
+5. Consult community stakeholders on whether equal domain weights reflect
+   local priorities
+
+---
+
+# References
+
+- Canadian Index of Wellbeing. (2016). *How are Canadians Really Doing?*
+  University of Waterloo.
+- Economist Intelligence Unit. (2023). *Global Liveability Index.*
+- Statistics Canada. (2021). *Material and Social Deprivation Index.*
+- United Nations Development Programme. (2023). *Human Development Index
+  Technical Notes.*

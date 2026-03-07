@@ -1,3 +1,9 @@
+# Index time window (2021–2023) ----
+INDEX_START       <- as.Date("2021-01-01")
+INDEX_END         <- Sys.Date()
+INDEX_CENSUS_YEAR <- "2021"
+
+
 
 # ── API endpoint list ────────────────────────────────────────────────────────── -----
 
