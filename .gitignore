@@ -1,0 +1,37 @@
+
+# R specific
+.Rhistory
+.RData
+.Rproj.user/
+*.Rproj
+
+# Data files
+data/
+data/*
+
+# R Environment (sensitive keys & variables)
+.Renviron
+.Renviron.*
+**/.Renviron
+
+# Sensitive data
+sensitive_data/
+sensitive_data/*
+secrets/
+secrets/*
+*.env
+.env*
+config/secrets.*
+credentials.*
+api_keys.*
+
+# Common data formats (if all data should be ignored)
+*.csv
+*.xlsx
+*.xls
+*.json
+*.rds
+*.RData
+*.sav
+*.dta
+*.parquet
