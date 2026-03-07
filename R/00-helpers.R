@@ -1,5 +1,3 @@
-
-
 # API Calls functions -----------------------------------------------------
 
 # Module 1: Build URL with optional limit ----
@@ -100,8 +98,46 @@ make_dt <- function(df,
   )
 }
 
+fetch_all_pages <- function(base_url, page_size = 1000L) {
+  require(httr2)
+  library(tidyverse)
+  offset  <- 0L
+  pages   <- list()
 
+  repeat {
+    resp <- request(base_url) |>
+      req_url_query(
+        `$limit`  = page_size,
+        `$offset` = offset,
+        `$order`  = ":id"
+      ) |>
+      req_perform()
 
+    page <- resp |> resp_body_json(simplifyVector = TRUE) |> as_tibble()
+
+    if (nrow(page) == 0L) break
+
+    pages  <- c(pages, list(page))
+    offset <- offset + page_size
+
+    message(sprintf("Fetched %d rows so far...", offset))
+
+    if (nrow(page) < page_size) break
+  }
+
+  bind_rows(pages)
+}
+
+fetch_one_page <- function(base_url) {
+  require(httr2)
+  library(tidyverse)
+
+  resp <- request(base_url) |>
+    req_perform()
+
+  page <- resp |> resp_body_json(simplifyVector = TRUE) |> as_tibble()
+
+}
 
 # 03-data-process helpers ---------------------------------------------------------
 
