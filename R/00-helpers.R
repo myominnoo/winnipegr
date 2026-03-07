@@ -38,25 +38,43 @@ report_failures <- function(data_list) {
 }
 
 # Module 4: Fetch all datasets with per-dataset limits ----
-fetch_all_socrata <- function(api_list, api_limits = NULL) {
+# httr2_keys: character vector of api_list names to route through fetch_all_pages
+#             instead of RSocrata. Limits are ignored for these — fetch_all_pages
+#             handles pagination internally via its own page_size argument.
+fetch_all_socrata <- function(api_list, api_limits = NULL, httr2_keys = NULL) {
   
-  # if no limits provided, fetch all rows for every dataset
-  if (base::is.null(api_limits)) {
-    data_list <- purrr::map(api_list, fetch_socrata)
-    
-    # if limits provided, apply per-dataset limits via map2  
+  # Normalise limits to a named list of NULLs when not supplied
+  limits <- if (base::is.null(api_limits)) {
+    stats::setNames(vector("list", base::length(api_list)), base::names(api_list))
   } else {
-    data_list <- purrr::map2(
-      api_list,
-      api_limits,
-      \(url, lim) fetch_socrata(url, limit = lim)
-    )
+    api_limits
   }
+  
+  # Per-dataset dispatcher ----
+  fetch_one <- function(name, url, lim) {
+    if (!base::is.null(httr2_keys) && name %in% httr2_keys) {
+      base::message("Fetching (httr2 paginated): ", url)
+      tryCatch(
+        expr  = fetch_all_pages(url),
+        error = \(e) {
+          base::message("ERROR fetching ", url, "\n  → ", base::conditionMessage(e))
+          NULL
+        }
+      )
+    } else {
+      fetch_socrata(url, limit = lim)
+    }
+  }
+  
+  # Dispatch over every dataset by name so httr2_keys matching works
+  data_list <- purrr::imap(
+    api_list,
+    \(url, name) fetch_one(name, url, limits[[name]])
+  )
   
   report_failures(data_list)
   data_list
 }
-
 
 
 # Module 5: Glimpse all datasets in a list ----

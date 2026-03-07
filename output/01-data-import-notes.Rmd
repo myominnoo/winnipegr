@@ -223,20 +223,20 @@ dataset. For each column it reports:
 
 Columns with any missing values, ranked by severity.
 ```{r missing-values}
-missing_summary <- diagnostics |>
-  dplyr::filter(pct_missing > 0) |>
-  dplyr::select(dataset, column, type, n_total, n_missing, pct_missing) |>
-  dplyr::arrange(dplyr::desc(pct_missing)) 
-
-missing_summary |> 
-  make_dt()
+# missing_summary <- diagnostics |>
+#   dplyr::filter(pct_missing > 0) |>
+#   dplyr::select(dataset, column, type, n_total, n_missing, pct_missing) |>
+#   dplyr::arrange(dplyr::desc(pct_missing)) 
+# 
+# missing_summary |> 
+#   make_dt()
 ```
 ```{r missing-flag}
 # Columns with > 50% missing — candidates for exclusion ----
-missing_summary |>
-  dplyr::filter(pct_missing > 50) |>
-  dplyr::select(dataset, column, pct_missing) |> 
-  make_dt()
+# missing_summary |>
+#   dplyr::filter(pct_missing > 50) |>
+#   dplyr::select(dataset, column, pct_missing) |> 
+#   make_dt()
 ```
 
 ---
@@ -245,10 +245,10 @@ missing_summary |>
 
 Summary statistics for all numeric and integer columns across every dataset.
 ```{r numeric-stats}
-diagnostics |>
-  dplyr::filter(type %in% c("numeric", "integer")) |>
-  dplyr::select(dataset, column, min, max, mean, median, sd, n_missing, pct_missing) |> 
-  make_dt()
+# diagnostics |>
+#   dplyr::filter(type %in% c("numeric", "integer")) |>
+#   dplyr::select(dataset, column, min, max, mean, median, sd, n_missing, pct_missing) |> 
+#   make_dt()
 ```
 
 ---
@@ -258,10 +258,10 @@ diagnostics |>
 Valid categories and their frequencies for all character columns. Columns with
 more than 10 unique values show the top 10 plus a count of remaining categories.
 ```{r categorical-values}
-diagnostics |>
-  dplyr::filter(type == "character", !base::is.na(categories)) |>
-  dplyr::select(dataset, column, n_unique, categories) |> 
-  make_dt()
+# diagnostics |>
+#   dplyr::filter(type == "character", !base::is.na(categories)) |>
+#   dplyr::select(dataset, column, n_unique, categories) |> 
+#   make_dt()
 ```
 
 ---
@@ -271,10 +271,10 @@ diagnostics |>
 Date range (min → max) for all date and datetime columns — useful for
 understanding temporal coverage before merging.
 ```{r date-ranges}
-diagnostics |>
-  dplyr::filter(type %in% c("POSIXct", "POSIXlt", "Date")) |>
-  dplyr::select(dataset, column, min, max, n_unique) |> 
-  make_dt()
+# diagnostics |>
+#   dplyr::filter(type %in% c("POSIXct", "POSIXlt", "Date")) |>
+#   dplyr::select(dataset, column, min, max, n_unique) |> 
+#   make_dt()
 ```
 
 
@@ -287,23 +287,7 @@ utils::sessionInfo()
 
 
 
-md---
-title: "Winnipeg Neighbourhood Liveability Index — Methodology"
-author: ""
-date: "`r Sys.Date()`"
-output:
-  html_document:
-    toc: true
-    toc_float: true
-    toc_depth: 3
-    theme: flatly
-    highlight: tango
-    df_print: default
----
-
----
-
-# Section 2: Factor Analysis
+# Section 2: Domain Structure Factor Analysis
 
 The Winnipeg Neighbourhood Liveability Index (WNLI) is a composite score that
 summarises the overall quality of life across Winnipeg neighbourhoods using
@@ -590,23 +574,962 @@ which reduces sensitivity to within-ward variation.
 
 ---
 
-# 7. Next Steps
 
-1. Resolve outstanding neighbourhood name mismatches (particularly 311 Requests)
-2. Validate domain scores against known neighbourhood characteristics
-3. Conduct sensitivity analysis on domain weights
-4. Map WNLI scores spatially using `centroid_lat` / `centroid_lon` from
-   Assessment Parcels
-5. Consult community stakeholders on whether equal domain weights reflect
-   local priorities
+
+---
+title: "Winnipeg Neighbourhood Liveability Index"
+subtitle: "Exploratory Factor Analysis · City of Winnipeg Open Data · 2021–2023"
+author: "City of Winnipeg — Data & Analytics"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    theme: flatly
+    highlight: tango
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    toc_depth: 3
+    number_sections: true
+---
+```{css, echo=FALSE}
+body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 14px; color: #2c3e50; }
+h1, h2, h3 { color: #1a3a5c; }
+.section-box {
+  background: #f4f8fb; border-left: 4px solid #2980b9;
+  padding: 12px 18px; margin-bottom: 18px; border-radius: 0 6px 6px 0;
+}
+.callout-warn {
+  background: #fef9e7; border-left: 4px solid #f39c12;
+  padding: 12px 18px; margin-bottom: 18px; border-radius: 0 6px 6px 0;
+}
+.callout-ok {
+  background: #e9f7ef; border-left: 4px solid #27ae60;
+  padding: 12px 18px; margin-bottom: 18px; border-radius: 0 6px 6px 0;
+}
+```
+```{r setup2, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE,
+                      fig.width=10, fig.height=6, dpi=150)
+
+library(dplyr); library(tidyr); library(tibble); library(stringr)
+library(lubridate); library(purrr); library(scales)
+library(psych); library(GPArotation)
+library(DT); library(ggplot2); library(forcats)
+
+INDEX_START  <- as.Date("2021-01-01")
+INDEX_END    <- as.Date("2023-12-31")
+NA_THRESHOLD <- 20
+
+indicator_cols <- c(
+  "total_living_area", "year_built", "rooms",
+  "parks_count", "parks_total_area_ha", "tree_count",
+  "substance_incidents_total", "naloxone_incidents_total",
+  "naloxone_doses_total", "wfps_incidents_total",
+  "wfps_median_response_mins", "trade_permits_total",
+  "bldg_permits_total", "bldg_value_total", "bldg_major_projects",
+  "rooming_complaints_total", "rooming_proactive_total",
+  "population_total", "population_in_mbm", "land_area_in_square_km"
+)
+```
 
 ---
 
-# References
+::: {.section-box}
+This report derives the **Winnipeg Neighbourhood Liveability Index (WNLI)** using
+Exploratory Factor Analysis (EFA) applied to parcel-level assessment data enriched
+with neighbourhood-level indicators from City of Winnipeg open datasets.
+The index aggregates five thematic domains: **Housing**, **Green Amenity**,
+**Safety & Disorder**, **Built Environment Activity**, and **Social Vulnerability**.
+All time-sensitive indicators are restricted to the **2021–2023** reference window.
+:::
 
-- Canadian Index of Wellbeing. (2016). *How are Canadians Really Doing?*
-  University of Waterloo.
-- Economist Intelligence Unit. (2023). *Global Liveability Index.*
-- Statistics Canada. (2021). *Material and Social Deprivation Index.*
-- United Nations Development Programme. (2023). *Human Development Index
-  Technical Notes.*
+---
+
+# Data & Indicator Selection
+
+## Source Datasets
+
+The following datasets were joined onto the assessment parcel anchor
+(`master_merged`, 245,130 parcels × 110 columns) using `neighbourhood_area`
+as the common key:
+```{r source-table}
+sources <- tibble::tibble(
+  Dataset               = c("Assessment Parcels", "Parks & Open Space",
+                             "Tree Inventory", "Substance Use Incidents",
+                             "Naloxone Administrations", "WFPS Call Logs",
+                             "Trade Permits", "Building Permits",
+                             "Rooming House Enforcement", "Higher Poverty Areas"),
+  Join_Key              = c("— (anchor)", rep("neighbourhood_area", 9)),
+  Date_Filter           = c("Full dataset", "Full dataset", "Full dataset",
+                             "2021–2023", "2021–2023", "2021–2023",
+                             "2021–2023", "2021–2023", "2021–2023",
+                             "2021 Census only"),
+  Thematic_Domain       = c("Housing", "Green Amenity", "Green Amenity",
+                             "Safety & Disorder", "Safety & Disorder",
+                             "Safety & Disorder", "Built Activity",
+                             "Built Activity", "Social Vulnerability",
+                             "Social Vulnerability")
+)
+
+DT::datatable(
+  sources,
+  rownames  = FALSE,
+  caption   = "Table 1 — Source datasets and join configuration",
+  options   = list(pageLength = 10, dom = "ftp",
+                   columnDefs = list(list(className = "dt-left", targets = "_all"))),
+  class     = "stripe hover compact"
+)
+```
+
+## Candidate Indicators
+
+Twenty neighbourhood-level indicators were nominated across five thematic domains
+prior to the missing-value screening described in the next section.
+```{r indicator-table}
+indicators <- tibble::tibble(
+  Indicator                  = indicator_cols,
+  Domain                     = c(
+    "Housing", "Housing", "Housing",
+    "Green Amenity", "Green Amenity", "Green Amenity",
+    "Safety & Disorder", "Safety & Disorder", "Safety & Disorder",
+    "Safety & Disorder", "Safety & Disorder",
+    "Built Activity", "Built Activity", "Built Activity", "Built Activity",
+    "Social Vulnerability", "Social Vulnerability",
+    "Social Vulnerability", "Social Vulnerability", "Social Vulnerability"
+  ),
+  Description = c(
+    "Mean total living area (sq ft)", "Mean year built", "Mean room count",
+    "Number of parks within neighbourhood", "Total park area (hectares)",
+    "Street tree count",
+    "Substance-related EMS incidents", "Naloxone deployment incidents",
+    "Naloxone doses administered", "WFPS total incidents",
+    "WFPS median response time (mins)",
+    "Total trade permits issued", "Total building permits",
+    "Total declared construction value ($)", "Major construction projects count",
+    "Rooming house complaint-driven inspections",
+    "Rooming house proactive enforcement actions",
+    "Total population (2021 Census)", "Population below MBM poverty line",
+    "Land area (sq km)"
+  )
+)
+
+DT::datatable(
+  indicators,
+  rownames  = FALSE,
+  filter    = "top",
+  caption   = "Table 2 — Candidate indicators (searchable by domain or name)",
+  options   = list(pageLength = 10, dom = "ftp",
+                   columnDefs = list(list(className = "dt-left", targets = "_all"))),
+  class     = "stripe hover compact"
+)
+```
+
+---
+
+# Missing Value Audit {.tabset}
+
+## Methodology
+
+::: {.callout-warn}
+**Decision rule:** Any indicator column where more than **`r NA_THRESHOLD`%** of
+rows are missing is flagged **REMOVE** and excluded from EFA. Columns between
+5–20% missing are flagged **REVIEW** and retained with median imputation.
+Columns below 5% missing are flagged **OK**.
+:::
+
+The audit is computed across all 245,130 parcel rows in `master_merged`.
+Columns with high sparsity typically arise from neighbourhood-level lookups
+that could not be matched (e.g., newer subdivisions absent from the poverty
+areas census table, or rooming house data restricted to inner-city neighbourhoods).
+
+## Audit Results
+```{r na-audit}
+na_audit <- master_merged |>
+  dplyr::select(dplyr::all_of(indicator_cols)) |>
+  dplyr::summarise(dplyr::across(
+    dplyr::everything(),
+    \(x) round(mean(is.na(x)) * 100, 1)
+  )) |>
+  tidyr::pivot_longer(dplyr::everything(),
+                      names_to  = "Indicator",
+                      values_to = "Pct_NA") |>
+  dplyr::mutate(
+    Domain = dplyr::case_when(
+      Indicator %in% c("total_living_area","year_built","rooms")
+        ~ "Housing",
+      Indicator %in% c("parks_count","parks_total_area_ha","tree_count")
+        ~ "Green Amenity",
+      Indicator %in% c("substance_incidents_total","naloxone_incidents_total",
+                       "naloxone_doses_total","wfps_incidents_total",
+                       "wfps_median_response_mins")
+        ~ "Safety & Disorder",
+      Indicator %in% c("trade_permits_total","bldg_permits_total",
+                       "bldg_value_total","bldg_major_projects")
+        ~ "Built Activity",
+      TRUE ~ "Social Vulnerability"
+    ),
+    Decision = dplyr::case_when(
+      Pct_NA >  NA_THRESHOLD ~ "REMOVE",
+      Pct_NA >  5            ~ "REVIEW",
+      TRUE                   ~ "OK"
+    )
+  ) |>
+  dplyr::arrange(dplyr::desc(Pct_NA))
+
+cols_to_remove <- na_audit |>
+  dplyr::filter(Decision == "REMOVE") |>
+  dplyr::pull(Indicator)
+
+cols_for_efa <- setdiff(indicator_cols, cols_to_remove)
+
+DT::datatable(
+  na_audit,
+  rownames  = FALSE,
+  filter    = "top",
+  caption   = "Table 3 — Missing value audit (searchable; sort by % NA or Decision)",
+  options   = list(
+    pageLength = 20,
+    dom        = "ftp",
+    columnDefs = list(list(className = "dt-center", targets = c(1, 3)))
+  ),
+  class = "stripe hover compact"
+) |>
+  DT::formatStyle(
+    "Decision",
+    backgroundColor = DT::styleEqual(
+      c("REMOVE", "REVIEW", "OK"),
+      c("#fde8e8",  "#fef9e7", "#e9f7ef")
+    ),
+    color = DT::styleEqual(
+      c("REMOVE", "REVIEW", "OK"),
+      c("#c0392b",  "#d68910", "#1e8449")
+    ),
+    fontWeight = "bold"
+  ) |>
+  DT::formatStyle("Pct_NA",
+    background = DT::styleColorBar(c(0, 100), "#d6eaf8"),
+    backgroundSize = "100% 80%",
+    backgroundRepeat = "no-repeat",
+    backgroundPosition = "center"
+  )
+```
+
+## Summary
+```{r na-summary}
+na_summary <- na_audit |>
+  dplyr::count(Decision) |>
+  dplyr::mutate(
+    Pct_of_Indicators = round(n / nrow(na_audit) * 100, 1),
+    Action = dplyr::case_when(
+      Decision == "REMOVE" ~ "Excluded from EFA",
+      Decision == "REVIEW" ~ "Retained — median imputed",
+      TRUE                 ~ "Retained as-is"
+    )
+  ) |>
+  dplyr::rename(Count = n)
+
+DT::datatable(
+  na_summary,
+  rownames = FALSE,
+  caption  = "Table 4 — Audit decision summary",
+  options  = list(dom = "t", pageLength = 5,
+                  columnDefs = list(list(className = "dt-center", targets = c(1,2)))),
+  class    = "stripe compact"
+) |>
+  DT::formatStyle(
+    "Decision",
+    backgroundColor = DT::styleEqual(
+      c("REMOVE", "REVIEW", "OK"),
+      c("#fde8e8", "#fef9e7", "#e9f7ef")
+    ),
+    color = DT::styleEqual(
+      c("REMOVE", "REVIEW", "OK"),
+      c("#c0392b", "#d68910", "#1e8449")
+    ),
+    fontWeight = "bold"
+  )
+```
+
+::: {.callout-warn}
+**Removed indicators:** `r paste(cols_to_remove, collapse = ", ")`.
+These columns exceed the 20% NA threshold — most reflect inner-city–only
+administrative records (rooming house enforcement, poverty census linkage)
+that do not generalise across all Winnipeg neighbourhoods.
+:::
+
+---
+
+# Neighbourhood-Level Aggregation
+
+::: {.section-box}
+EFA operates at the **neighbourhood level** (one row per neighbourhood), not
+the parcel level. All retained indicators are averaged up from parcels to their
+`neighbourhood_area` before scaling. Neighbourhoods where more than 50% of
+retained indicators remain missing after aggregation are dropped.
+:::
+```{r neigh-agg}
+neigh_efa <- master_merged |>
+  dplyr::group_by(neighbourhood_area) |>
+  dplyr::summarise(
+    dplyr::across(dplyr::all_of(cols_for_efa),
+                  \(x) mean(x, na.rm = TRUE)),
+    .groups = "drop"
+  ) |>
+  dplyr::filter(
+    rowMeans(is.na(dplyr::across(dplyr::all_of(cols_for_efa)))) < 0.5
+  )
+```
+```{r neigh-preview}
+DT::datatable(
+  neigh_efa |>
+    dplyr::mutate(dplyr::across(where(is.numeric), \(x) round(x, 2))),
+  rownames  = FALSE,
+  filter    = "top",
+  caption   = paste0("Table 5 — Neighbourhood-level indicator matrix (",
+                     nrow(neigh_efa), " neighbourhoods × ",
+                     length(cols_for_efa), " indicators). Searchable."),
+  options   = list(
+    pageLength  = 15,
+    scrollX     = TRUE,
+    dom         = "fltip",
+    autoWidth   = TRUE
+  ),
+  class = "stripe hover compact"
+)
+```
+
+---
+
+# EFA Pre-Checks {.tabset}
+
+## Scaling & Variance
+```{r scaling}
+efa_matrix <- neigh_efa |>
+  dplyr::select(dplyr::all_of(cols_for_efa)) |>
+  dplyr::mutate(dplyr::across(dplyr::everything(), as.numeric)) |>
+  dplyr::mutate(dplyr::across(
+    dplyr::everything(),
+    \(x) ifelse(is.na(x), median(x, na.rm = TRUE), x)
+  )) |>
+  scale() |>
+  as.data.frame()
+
+nzv      <- sapply(efa_matrix, sd, na.rm = TRUE)
+efa_matrix <- efa_matrix[, nzv > 0.01]
+```
+
+After z-score standardisation and median imputation of residual NAs,
+**`r ncol(efa_matrix)`** indicators with non-zero variance enter the EFA.
+Near-zero-variance columns (SD ≤ 0.01 post-scaling) are automatically
+removed to prevent matrix singularity.
+
+## KMO & Bartlett
+```{r precheck}
+cor_matrix  <- cor(efa_matrix, use = "pairwise.complete.obs")
+kmo_result  <- psych::KMO(cor_matrix)
+bart_result <- psych::cortest.bartlett(cor_matrix, n = nrow(efa_matrix))
+
+precheck_tbl <- tibble::tibble(
+  Test      = c("KMO — Overall MSA",
+                "Bartlett's Test — Chi-squared",
+                "Bartlett's Test — p-value"),
+  Value     = c(round(kmo_result$MSA, 3),
+                round(bart_result$chisq, 2),
+                format.pval(bart_result$p.value, digits = 3)),
+  Threshold = c("> 0.60 (acceptable), > 0.80 (meritorious)",
+                "—",
+                "< 0.05 (reject sphericity null)"),
+  Result    = c(
+    ifelse(kmo_result$MSA >= 0.8, "Meritorious",
+           ifelse(kmo_result$MSA >= 0.6, "Acceptable", "Poor")),
+    "—",
+    ifelse(bart_result$p.value < 0.05, "PASS", "FAIL")
+  )
+)
+
+DT::datatable(
+  precheck_tbl,
+  rownames = FALSE,
+  caption  = "Table 6 — EFA suitability pre-checks",
+  options  = list(dom = "t", pageLength = 5,
+                  columnDefs = list(list(className = "dt-left", targets = "_all"))),
+  class    = "stripe compact"
+) |>
+  DT::formatStyle(
+    "Result",
+    color      = DT::styleEqual(
+      c("Meritorious","Acceptable","Poor","PASS","FAIL","—"),
+      c("#1e8449","#d68910","#c0392b","#1e8449","#c0392b","#555")
+    ),
+    fontWeight = "bold"
+  )
+```
+
+## Per-Variable MSA
+```{r kmo-var}
+kmo_var <- tibble::tibble(
+  Indicator = names(kmo_result$MSAi),
+  MSA       = round(kmo_result$MSAi, 3),
+  Flag      = dplyr::case_when(
+    kmo_result$MSAi >= 0.80 ~ "Meritorious",
+    kmo_result$MSAi >= 0.70 ~ "Middling",
+    kmo_result$MSAi >= 0.60 ~ "Mediocre",
+    kmo_result$MSAi >= 0.50 ~ "Miserable",
+    TRUE                    ~ "Unacceptable — consider dropping"
+  )
+) |> dplyr::arrange(MSA)
+
+DT::datatable(
+  kmo_var,
+  rownames = FALSE,
+  filter   = "top",
+  caption  = "Table 7 — Per-variable KMO MSA values (sort ascending to find weak indicators)",
+  options  = list(pageLength = 15, dom = "ftp",
+                  columnDefs = list(list(className = "dt-center", targets = 1))),
+  class    = "stripe hover compact"
+) |>
+  DT::formatStyle(
+    "Flag",
+    backgroundColor = DT::styleEqual(
+      c("Meritorious","Middling","Mediocre","Miserable","Unacceptable — consider dropping"),
+      c("#e9f7ef","#eafaf1","#fef9e7","#fdebd0","#fde8e8")
+    ),
+    color = DT::styleEqual(
+      c("Meritorious","Middling","Mediocre","Miserable","Unacceptable — consider dropping"),
+      c("#1e8449","#1e8449","#d68910","#ca6f1e","#c0392b")
+    ),
+    fontWeight = "bold"
+  )
+```
+
+---
+
+# Factor Extraction {.tabset}
+
+## Parallel Analysis
+
+::: {.section-box}
+Parallel analysis compares observed eigenvalues against eigenvalues from
+random correlation matrices of the same size. Factors are retained where
+the observed eigenvalue exceeds the simulated 95th percentile.
+The scree plot below assists in determining the optimal number of factors **`n_factors`**.
+After inspecting the plot, update `n_factors` in the chunk below before
+proceeding to the EFA solution.
+:::
+```{r parallel, fig.cap="Figure 1 — Parallel Analysis Scree Plot. Retain factors whose observed eigenvalue (blue) exceeds the simulated line (red)."}
+psych::fa.parallel(
+  efa_matrix,
+  fm     = "ml",
+  fa     = "fa",
+  n.iter = 100,
+  main   = "Parallel Analysis — Winnipeg Liveability Indicators"
+)
+```
+
+## EFA Solution
+```{r efa}
+# ── Update n_factors based on parallel analysis output above ──
+n_factors <- 4
+
+efa_result <- psych::fa(
+  r        = efa_matrix,
+  nfactors = n_factors,
+  rotate   = "oblimin",
+  fm       = "ml",
+  scores   = "regression"
+)
+```
+```{r efa-variance}
+vaccounted <- as.data.frame(efa_result$Vaccounted) |>
+  tibble::rownames_to_column("Statistic") |>
+  dplyr::mutate(dplyr::across(where(is.numeric), \(x) round(x, 3)))
+
+DT::datatable(
+  vaccounted,
+  rownames = FALSE,
+  caption  = "Table 8 — Variance accounted for by each factor",
+  options  = list(dom = "t", pageLength = 10,
+                  columnDefs = list(list(className = "dt-center", targets = -1))),
+  class    = "stripe compact"
+)
+```
+
+## Factor Loadings
+
+::: {.section-box}
+Loadings ≥ |0.30| are considered meaningful. Use this table to assign
+substantive labels to each factor (edit `factor_labels` in the next section
+accordingly). Indicators with no loading ≥ |0.30| on any factor may be
+candidates for removal in a confirmatory model.
+:::
+```{r loadings-table}
+loadings_df <- as.data.frame(unclass(efa_result$loadings)) |>
+  tibble::rownames_to_column("Indicator") |>
+  dplyr::mutate(dplyr::across(where(is.numeric), \(x) round(x, 3)))
+
+DT::datatable(
+  loadings_df,
+  rownames = FALSE,
+  filter   = "top",
+  caption  = "Table 9 — EFA factor loadings (|≥ 0.30| are meaningful; searchable by indicator name)",
+  options  = list(
+    pageLength = 20,
+    scrollX    = TRUE,
+    dom        = "ftp",
+    columnDefs = list(list(className = "dt-center", targets = -1))
+  ),
+  class = "stripe hover compact"
+) |>
+  DT::formatStyle(
+    colnames(loadings_df)[-1],
+    backgroundColor = DT::styleInterval(
+      c(-0.30, 0.30),
+      c("#fde8e8", "white", "#e9f7ef")
+    )
+  )
+```
+
+## Factor Intercorrelations
+```{r phi}
+phi_df <- as.data.frame(round(efa_result$Phi, 3)) |>
+  tibble::rownames_to_column("Factor")
+
+DT::datatable(
+  phi_df,
+  rownames = FALSE,
+  caption  = "Table 10 — Factor intercorrelation matrix (oblimin rotation)",
+  options  = list(dom = "t", pageLength = 10,
+                  columnDefs = list(list(className = "dt-center", targets = -1))),
+  class    = "stripe compact"
+)
+```
+
+---
+
+# Liveability Index Construction {.tabset}
+
+## Factor Scores
+```{r factor-scores}
+# ── Assign factor labels after inspecting Table 9 loadings ──
+factor_labels <- c(
+  "F1_GreenAmenity",
+  "F2_SafetyDisorder",
+  "F3_BuiltActivity",
+  "F4_SocialVulnerability"
+)
+
+factor_scores <- as.data.frame(efa_result$scores)
+names(factor_scores) <- factor_labels[seq_len(n_factors)]
+
+neigh_scores <- dplyr::bind_cols(
+  neigh_efa |> dplyr::select(neighbourhood_area),
+  factor_scores
+)
+```
+```{r scores-table}
+DT::datatable(
+  neigh_scores |>
+    dplyr::mutate(dplyr::across(where(is.numeric), \(x) round(x, 3))),
+  rownames = FALSE,
+  filter   = "top",
+  caption  = "Table 11 — Neighbourhood factor scores (searchable by neighbourhood name)",
+  options  = list(
+    pageLength = 15,
+    scrollX    = TRUE,
+    dom        = "fltip"
+  ),
+  class = "stripe hover compact"
+)
+```
+
+## Composite Index
+
+::: {.section-box}
+**Sign convention:** Higher scores always indicate *better* liveability.
+Factors where high scores represent *worse* conditions (e.g., more disorder,
+more poverty) are negated before averaging. The composite is then rescaled
+to a **0–100** scale for interpretability.
+:::
+```{r composite}
+neigh_scores <- neigh_scores |>
+  dplyr::mutate(
+    F2_SafetyDisorder_inv      = -F2_SafetyDisorder,
+    F4_SocialVulnerability_inv = -F4_SocialVulnerability,
+    liveability_raw   = rowMeans(dplyr::pick(
+      F1_GreenAmenity,
+      F2_SafetyDisorder_inv,
+      F3_BuiltActivity,
+      F4_SocialVulnerability_inv
+    ), na.rm = TRUE),
+    liveability_score = scales::rescale(liveability_raw, to = c(0, 100))
+  ) |>
+  dplyr::arrange(dplyr::desc(liveability_score))
+```
+```{r composite-table}
+DT::datatable(
+  neigh_scores |>
+    dplyr::select(
+      neighbourhood_area, liveability_score,
+      F1_GreenAmenity, F2_SafetyDisorder, F3_BuiltActivity, F4_SocialVulnerability
+    ) |>
+    dplyr::mutate(dplyr::across(where(is.numeric), \(x) round(x, 2))),
+  rownames = FALSE,
+  filter   = "top",
+  caption  = "Table 12 — Winnipeg Neighbourhood Liveability Index scores (searchable; sort by score)",
+  options  = list(
+    pageLength = 20,
+    scrollX    = TRUE,
+    dom        = "fltip",
+    columnDefs = list(list(className = "dt-center", targets = -1))
+  ),
+  class = "stripe hover compact"
+) |>
+  DT::formatStyle(
+    "liveability_score",
+    background         = DT::styleColorBar(c(0, 100), "#aed6f1"),
+    backgroundSize     = "100% 80%",
+    backgroundRepeat   = "no-repeat",
+    backgroundPosition = "center"
+  ) |>
+  DT::formatStyle(
+    "liveability_score",
+    color      = DT::styleInterval(c(33, 66), c("#c0392b","#d68910","#1e8449")),
+    fontWeight = "bold"
+  )
+```
+
+---
+
+# Results Visualisation
+```{r plot-top-bottom, fig.cap="Figure 2 — Top and bottom 20 Winnipeg neighbourhoods by Liveability Index score (0–100 scale)."}
+top_bottom <- dplyr::bind_rows(
+  head(neigh_scores, 20) |> dplyr::mutate(Group = "Top 20"),
+  tail(neigh_scores, 20) |> dplyr::mutate(Group = "Bottom 20")
+)
+
+ggplot2::ggplot(
+  top_bottom,
+  ggplot2::aes(
+    x    = liveability_score,
+    y    = forcats::fct_reorder(neighbourhood_area, liveability_score),
+    fill = Group
+  )
+) +
+  ggplot2::geom_col(width = 0.7) +
+  ggplot2::geom_text(
+    ggplot2::aes(label = round(liveability_score, 1)),
+    hjust = -0.15, size = 3, colour = "#2c3e50"
+  ) +
+  ggplot2::scale_fill_manual(
+    values = c("Top 20" = "#27ae60", "Bottom 20" = "#e74c3c")
+  ) +
+  ggplot2::scale_x_continuous(limits = c(0, 105), expand = c(0, 0)) +
+  ggplot2::labs(
+    title    = "Winnipeg Neighbourhood Liveability Index",
+    subtitle = paste0(n_factors, "-factor EFA composite · 0–100 scale · 2021–2023 reference period"),
+    x        = "Liveability Score",
+    y        = NULL,
+    fill     = NULL,
+    caption  = "Source: City of Winnipeg Open Data · Parcel-level assessment anchor · EFA via psych package"
+  ) +
+  ggplot2::theme_minimal(base_size = 11) +
+  ggplot2::theme(
+    legend.position  = "top",
+    panel.grid.major.y = ggplot2::element_blank(),
+    plot.title       = ggplot2::element_text(face = "bold", colour = "#1a3a5c"),
+    plot.subtitle    = ggplot2::element_text(colour = "#555"),
+    plot.caption     = ggplot2::element_text(colour = "#888", size = 9)
+  )
+```
+
+---
+
+# Export Outputs
+```{r export}
+readr::write_csv(neigh_scores,  "winnipeg_liveability_scores.csv")
+readr::write_csv(na_audit,      "winnipeg_na_audit.csv")
+
+loadings_export <- as.data.frame(unclass(efa_result$loadings)) |>
+  tibble::rownames_to_column("indicator")
+readr::write_csv(loadings_export, "winnipeg_efa_loadings.csv")
+```
+
+Three files are written to the working directory upon knitting:
+
+| File | Contents |
+|---|---|
+| `winnipeg_liveability_scores.csv` | Neighbourhood scores + factor scores |
+| `winnipeg_na_audit.csv` | Full missing value audit with flags |
+| `winnipeg_efa_loadings.csv` | Factor loading matrix |
+
+---
+
+
+---
+
+# Parcel-Level Liveability Dataset {.tabset}
+
+## Overview
+
+::: {.section-box}
+The neighbourhood-level liveability index and its four factor scores are
+joined back onto every assessment parcel. Each row represents one property,
+searchable by address, neighbourhood, or any housing characteristic.
+Factor score columns are colour-coded by quartile so spatial clustering of
+liveability is immediately visible at the parcel level.
+:::
+
+## Build Parcel Dataset
+```{r parcel-join, include=FALSE}
+# ── Factor label lookup (mirrors factor_labels defined earlier) ──
+factor_col_lookup <- tibble::tibble(
+  domain   = c("Housing", "Green Amenity",
+                "Safety & Disorder", "Built Activity", "Social Vulnerability"),
+  factor   = c("F1_GreenAmenity", "F1_GreenAmenity",
+                "F2_SafetyDisorder", "F3_BuiltActivity", "F4_SocialVulnerability")
+)
+
+# ── Indicators retained under each factor (from loadings inspection) ──
+f1_vars <- c("parks_count", "parks_total_area_ha", "tree_count")
+f2_vars <- c("substance_incidents_total", "naloxone_incidents_total",
+              "naloxone_doses_total", "wfps_incidents_total",
+              "wfps_median_response_mins")
+f3_vars <- c("trade_permits_total", "bldg_permits_total",
+              "bldg_value_total",   "bldg_major_projects")
+f4_vars <- c("population_total", "population_in_mbm",
+              "land_area_in_square_km")
+
+# ── Core parcel / address / housing columns ──
+parcel_core <- c(
+  "roll_number", "full_address", "street_number", "street_name",
+  "street_type", "neighbourhood_area", "market_region",
+  "building_type", "total_living_area", "year_built", "rooms",
+  "basement", "basement_finish", "air_conditioning",
+  "fire_place", "attached_garage", "detached_garage", "pool",
+  "assessed_land_area", "total_assessed_value",
+  "total_proposed_assessment_value", "zoning",
+  "property_use_code", "centroid_lat", "centroid_lon"
+)
+
+# ── Join liveability scores onto master_merged ──
+parcel_liveability <- master_merged |>
+  dplyr::left_join(
+    neigh_scores |>
+      dplyr::select(
+        neighbourhood_area,
+        liveability_score,
+        F1_GreenAmenity,
+        F2_SafetyDisorder,
+        F3_BuiltActivity,
+        F4_SocialVulnerability
+      ),
+    by = "neighbourhood_area"
+  ) |>
+  dplyr::select(
+    dplyr::all_of(parcel_core),
+    liveability_score,
+    F1_GreenAmenity, F2_SafetyDisorder, F3_BuiltActivity, F4_SocialVulnerability,
+    dplyr::all_of(intersect(c(f1_vars, f2_vars, f3_vars, f4_vars),
+                             names(master_merged)))
+  ) |>
+  dplyr::mutate(
+    total_assessed_value           = as.numeric(total_assessed_value),
+    total_proposed_assessment_value = as.numeric(total_proposed_assessment_value),
+    dplyr::across(where(is.numeric), \(x) round(x, 2))
+  ) |>
+  dplyr::arrange(dplyr::desc(liveability_score))
+
+# ── Friendly column names for display ──
+display_names <- c(
+  "Roll Number", "Full Address", "Street No.", "Street Name", "Street Type",
+  "Neighbourhood", "Market Region",
+  "Building Type", "Living Area (sq ft)", "Year Built", "Rooms",
+  "Basement", "Basement Finished", "Air Conditioning",
+  "Fireplace", "Attached Garage", "Detached Garage", "Pool",
+  "Land Area (sq ft)", "Assessed Value ($)", "Proposed Value ($)",
+  "Zoning", "Property Use", "Latitude", "Longitude",
+  "Liveability Score",
+  "F1: Green Amenity", "F2: Safety & Disorder",
+  "F3: Built Activity", "F4: Social Vulnerability",
+  # factor indicator variables — keep original names trimmed
+  intersect(c(f1_vars, f2_vars, f3_vars, f4_vars), names(master_merged))
+)
+
+# Align name vector length safely
+names(parcel_liveability) <- display_names[seq_len(ncol(parcel_liveability))]
+```
+
+## Parcel Table
+
+::: {.callout-warn}
+**How to use this table:** Search any address, neighbourhood, or street name
+using the global search box. Use column filters (top row) to narrow by
+building type, year built, zoning, etc.
+Factor columns are colour-coded: 🟢 **top quartile** · 🟡 **second quartile**
+· 🟠 **third quartile** · 🔴 **bottom quartile**.
+For Safety & Disorder, the colour scale is **inverted** (lower = better).
+:::
+```{r parcel-dt}
+# ── Identify factor column positions (0-indexed for DT) ──
+col_names_display <- names(parcel_liveability)
+
+idx_score <- which(col_names_display == "Liveability Score")       - 1L
+idx_f1    <- which(col_names_display == "F1: Green Amenity")       - 1L
+idx_f2    <- which(col_names_display == "F2: Safety & Disorder")   - 1L
+idx_f3    <- which(col_names_display == "F3: Built Activity")      - 1L
+idx_f4    <- which(col_names_display == "F4: Social Vulnerability") - 1L
+
+# ── Quartile colour palettes ──
+# Green Amenity, Built Activity, Social Vulnerability: high = good = green
+pos_pal <- c("#c0392b", "#e67e22", "#f1c40f", "#27ae60")   # Q1→Q4
+
+# Safety & Disorder: high = bad = red (inverted)
+neg_pal <- c("#27ae60", "#f1c40f", "#e67e22", "#c0392b")   # Q1→Q4
+
+score_pal <- c("#e74c3c","#e67e22","#f7dc6f","#a9dfbf","#27ae60")
+
+quartile_breaks <- function(x) quantile(x, probs = c(0.25, 0.50, 0.75), na.rm = TRUE)
+
+q_score <- quantile(parcel_liveability[["Liveability Score"]],
+                    probs = seq(0, 1, 0.2), na.rm = TRUE)
+q_f1    <- quartile_breaks(parcel_liveability[["F1: Green Amenity"]])
+q_f2    <- quartile_breaks(parcel_liveability[["F2: Safety & Disorder"]])
+q_f3    <- quartile_breaks(parcel_liveability[["F3: Built Activity"]])
+q_f4    <- quartile_breaks(parcel_liveability[["F4: Social Vulnerability"]])
+
+DT::datatable(
+  parcel_liveability,
+  rownames   = FALSE,
+  filter     = "top",
+  caption    = paste0(
+    "Table 13 — Parcel-level Liveability Dataset  (",
+    format(nrow(parcel_liveability), big.mark = ","),
+    " parcels). Search by address, neighbourhood, or any column filter."
+  ),
+  extensions = c("Buttons", "FixedColumns", "Scroller"),
+  options    = list(
+    pageLength   = 25,
+    scrollX      = TRUE,
+    scrollY      = "520px",
+    scroller     = TRUE,
+    deferRender  = TRUE,
+    dom          = "Bfltip",
+    fixedColumns = list(leftColumns = 2L),   # freeze Roll Number + Address
+    buttons      = list(
+      list(extend = "csv",   filename = "winnipeg_parcel_liveability"),
+      list(extend = "excel", filename = "winnipeg_parcel_liveability"),
+      "colvis"               # toggle column visibility
+    ),
+    columnDefs   = list(
+      list(className = "dt-center",
+           targets   = c(idx_score, idx_f1, idx_f2, idx_f3, idx_f4)),
+      list(visible = FALSE,
+           targets  = c(
+             which(col_names_display %in%
+                     c("Street No.", "Street Name", "Street Type",
+                       "Latitude", "Longitude", "Roll Number")) - 1L
+           ))
+    )
+  ),
+  class = "stripe hover compact nowrap"
+) |>
+
+  # ── Liveability Score — continuous blue bar + coloured text ──
+  DT::formatStyle(
+    "Liveability Score",
+    background         = DT::styleColorBar(c(0, 100), "#aed6f1"),
+    backgroundSize     = "100% 75%",
+    backgroundRepeat   = "no-repeat",
+    backgroundPosition = "center",
+    color              = DT::styleInterval(
+      c(20, 40, 60, 80),
+      c("#922b21","#ca6f1e","#7d6608","#1a5276","#1e8449")
+    ),
+    fontWeight = "bold"
+  ) |>
+
+  # ── F1: Green Amenity — quartile green ramp (high = good) ──
+  DT::formatStyle(
+    "F1: Green Amenity",
+    backgroundColor = DT::styleInterval(q_f1, c(pos_pal[1], pos_pal[2],
+                                                  pos_pal[3], pos_pal[4])),
+    color           = "white",
+    fontWeight      = "bold"
+  ) |>
+
+  # ── F2: Safety & Disorder — inverted (high = bad = red) ──
+  DT::formatStyle(
+    "F2: Safety & Disorder",
+    backgroundColor = DT::styleInterval(q_f2, c(neg_pal[1], neg_pal[2],
+                                                  neg_pal[3], neg_pal[4])),
+    color           = "white",
+    fontWeight      = "bold"
+  ) |>
+
+  # ── F3: Built Activity — quartile green ramp ──
+  DT::formatStyle(
+    "F3: Built Activity",
+    backgroundColor = DT::styleInterval(q_f3, c(pos_pal[1], pos_pal[2],
+                                                  pos_pal[3], pos_pal[4])),
+    color           = "white",
+    fontWeight      = "bold"
+  ) |>
+
+  # ── F4: Social Vulnerability — inverted (high vulnerability = red) ──
+  DT::formatStyle(
+    "F4: Social Vulnerability",
+    backgroundColor = DT::styleInterval(q_f4, c(neg_pal[1], neg_pal[2],
+                                                  neg_pal[3], neg_pal[4])),
+    color           = "white",
+    fontWeight      = "bold"
+  ) |>
+
+  # ── Assessed Value — formatted as dollar ──
+  DT::formatCurrency(
+    columns  = "Assessed Value ($)",
+    currency = "$",
+    digits   = 0
+  ) |>
+  DT::formatCurrency(
+    columns  = "Proposed Value ($)",
+    currency = "$",
+    digits   = 0
+  ) |>
+
+  # ── Soft row stripe by building type ──
+  DT::formatStyle(
+    "Building Type",
+    backgroundColor = DT::styleEqual(
+      c("ONE STOREY","TWO STOREY","BI-LEVEL","SPLIT LEVEL","THREE STOREY"),
+      c("#fdfefe",  "#f4f6f7",   "#eaf2ff",  "#fff9f0",    "#f9f0ff")
+    )
+  )
+```
+
+## Download & Notes
+
+::: {.section-box}
+**Download options** are available via the **CSV** and **Excel** buttons in the
+table toolbar above. The **Col visibility** button lets you show or hide any column.
+
+**Column groups by factor:**
+
+| Factor | Colour Scale | Indicator Columns Included |
+|---|---|---|
+| F1: Green Amenity | 🟥→🟩 (high = good) | `parks_count`, `parks_total_area_ha`, `tree_count` |
+| F2: Safety & Disorder | 🟩→🟥 (high = bad) | `substance_incidents_total`, `naloxone_incidents_total`, `naloxone_doses_total`, `wfps_incidents_total`, `wfps_median_response_mins` |
+| F3: Built Activity | 🟥→🟩 (high = good) | `trade_permits_total`, `bldg_permits_total`, `bldg_value_total`, `bldg_major_projects` |
+| F4: Social Vulnerability | 🟩→🟥 (high = bad) | `population_total`, `population_in_mbm`, `land_area_in_square_km` |
+
+**Liveability Score** (0–100) is an equal-weighted composite of all four
+inverted/signed factor scores, rescaled linearly.
+The score is assigned at the **neighbourhood level** and is identical for all
+parcels within the same neighbourhood.
+:::
+
+# Session Info
+```{r session}
+sessionInfo()
+```
+

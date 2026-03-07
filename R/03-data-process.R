@@ -104,21 +104,21 @@ naloxone_agg <- data_raw_list$naloxone_administrations |>
     ),
     .groups = "drop"
   )
-
-# Step 5: Aggregate 311 requests (2021–2023, drop blank neighbourhood rows) ----
-requests_311_agg <- data_raw_list$requests_311 |>
-  dplyr::filter(
-    neighbourhood != "",
-    dplyr::between(base::as.Date(open_date), INDEX_START, INDEX_END)
-  ) |>
-  dplyr::mutate(neighbourhood_area = clean_neighbourhood(neighbourhood)) |>
-  dplyr::group_by(neighbourhood_area) |>
-  dplyr::summarise(
-    requests_311_total  = dplyr::n(),
-    requests_311_open   = base::sum(case_status == "Open",   na.rm = TRUE),
-    requests_311_closed = base::sum(case_status == "Closed", na.rm = TRUE),
-    .groups = "drop"
-  )
+# 
+# # Step 5: Aggregate 311 requests (2021–2023, drop blank neighbourhood rows) ----
+# requests_311_agg <- data_raw_list$requests_311 |>
+#   dplyr::filter(
+#     neighbourhood != "",
+#     dplyr::between(base::as.Date(open_date), INDEX_START, INDEX_END)
+#   ) |>
+#   dplyr::mutate(neighbourhood_area = clean_neighbourhood(neighbourhood)) |>
+#   dplyr::group_by(neighbourhood_area) |>
+#   dplyr::summarise(
+#     requests_311_total  = dplyr::n(),
+#     requests_311_open   = base::sum(case_status == "Open",   na.rm = TRUE),
+#     requests_311_closed = base::sum(case_status == "Closed", na.rm = TRUE),
+#     .groups = "drop"
+#   )
 
 # Step 6: Aggregate trade permits by neighbourhood (2021–2023) ----
 trade_permits_agg <- data_raw_list$trade_permits |>
@@ -178,6 +178,60 @@ rentals_agg <- data_raw_list$short_term_rentals |>
   )
 
 
+# Step 9b: Aggregate building permits by neighbourhood (2021–2023) ----
+# Residential vs non-residential breakdown; value in declared construction $
+building_permits_agg <- data_raw_list$aggregate_building_permits |>
+  dplyr::filter(
+    as.integer(year) >= lubridate::year(INDEX_START),
+    as.integer(year) <= lubridate::year(INDEX_END)
+  ) |>
+  dplyr::mutate(neighbourhood_area = clean_neighbourhood(neighbourhood)) |>
+  dplyr::group_by(neighbourhood_area) |>
+  dplyr::summarise(
+    bldg_permits_total       = base::sum(base::as.numeric(total_permits),                    na.rm = TRUE),
+    bldg_permits_residential = base::sum(base::as.numeric(total_permits[permit_group == "Residential"]),     na.rm = TRUE),
+    bldg_permits_nonres      = base::sum(base::as.numeric(total_permits[permit_group == "Non-Residential"]), na.rm = TRUE),
+    bldg_value_total         = base::sum(base::as.numeric(total_declared_construction_value), na.rm = TRUE),
+    bldg_major_projects      = base::sum(base::as.numeric(major_projects_count),              na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Step 9c: Tree inventory — one row per neighbourhood, already aggregated ----
+tree_agg <- data_raw_list$tree_inventory |>
+  dplyr::mutate(
+    neighbourhood_area = clean_neighbourhood(neighbourhood),
+    tree_count         = base::as.numeric(count)
+  ) |>
+  dplyr::select(neighbourhood_area, tree_count)
+
+
+# Step 9d: WFPS call logs — response time by neighbourhood (2021–2023) ----
+# Call Time / Closed Time are chr: "2022 Apr 05 04:17:33 AM"
+wfps_agg <- data_raw_list$wfps_call_logs |>
+  dplyr::rename(
+    neighbourhood_area = Neighbourhood,
+    incident_type      = `Incident Type`,
+    call_time          = `Call Time`,
+    closed_time        = `Closed Time`
+  ) |>
+  dplyr::mutate(
+    neighbourhood_area = clean_neighbourhood(neighbourhood_area),
+    call_dt   = lubridate::parse_date_time(call_time,   orders = "Y b d I:M:S p"),
+    closed_dt = lubridate::parse_date_time(closed_time, orders = "Y b d I:M:S p"),
+    response_mins = base::as.numeric(difftime(closed_dt, call_dt, units = "mins"))
+  ) |>
+  dplyr::filter(
+    dplyr::between(base::as.Date(call_dt), INDEX_START, INDEX_END),
+    response_mins >= 0   # drop negative / malformed times
+  ) |>
+  dplyr::group_by(neighbourhood_area) |>
+  dplyr::summarise(
+    wfps_incidents_total    = dplyr::n(),
+    wfps_median_response_mins = stats::median(response_mins, na.rm = TRUE),
+    wfps_mean_response_mins   = base::mean(response_mins,   na.rm = TRUE),
+    .groups = "drop"
+  )
+
 # Step 10: Join audit helper ----
 audit_join <- function(master, lookup, by, dataset_name) {
   
@@ -208,16 +262,22 @@ audit_join <- function(master, lookup, by, dataset_name) {
 
 
 # Step 10: Left join all onto parcel-level master with audit ----
+
+
 datasets_to_join <- list(
-  list(data = parks_agg,            by = "neighbourhood_area", name = "parks_agg"),
-  list(data = substance_agg,        by = "neighbourhood_area", name = "substance_agg"),
-  list(data = naloxone_agg,         by = "neighbourhood_area", name = "naloxone_agg"),
-  list(data = requests_311_agg,     by = "neighbourhood_area", name = "requests_311_agg"),
-  list(data = trade_permits_agg,    by = "neighbourhood_area", name = "trade_permits_agg"),
-  list(data = rooming_house_agg,    by = "neighbourhood_area", name = "rooming_house_agg"),
-  list(data = higher_poverty_clean, by = "neighbourhood_area", name = "higher_poverty_clean")
-  # list(data = rentals_agg,          by = "electoral_ward",     name = "rentals_agg")
+  list(data = parks_agg,             by = "neighbourhood_area", name = "parks_agg"),
+  list(data = tree_agg,              by = "neighbourhood_area", name = "tree_agg"),
+  list(data = substance_agg,         by = "neighbourhood_area", name = "substance_agg"),
+  list(data = naloxone_agg,          by = "neighbourhood_area", name = "naloxone_agg"),
+  list(data = wfps_agg,              by = "neighbourhood_area", name = "wfps_agg"),
+  # list(data = requests_311_agg,    by = "neighbourhood_area", name = "requests_311_agg"),
+  list(data = trade_permits_agg,     by = "neighbourhood_area", name = "trade_permits_agg"),
+  list(data = building_permits_agg,  by = "neighbourhood_area", name = "building_permits_agg"),
+  list(data = rooming_house_agg,     by = "neighbourhood_area", name = "rooming_house_agg"),
+  list(data = higher_poverty_clean,  by = "neighbourhood_area", name = "higher_poverty_clean")
+  # list(data = rentals_agg,         by = "electoral_ward",     name = "rentals_agg")
 )
+
 
 base::message("\n", base::strrep("═", 60))
 base::message("Join Audit — master: ", base::nrow(master), " parcels")
@@ -280,5 +340,4 @@ master_merged |>
   tidyr::pivot_longer(dplyr::everything(),
                       names_to  = "column",
                       values_to = "pct_na") |>
-  dplyr::arrange(dplyr::desc(pct_na)) |> 
-  View()
+  dplyr::arrange(dplyr::desc(pct_na)) 
